@@ -1,0 +1,153 @@
+---
+title: "Preprocessing"
+author: "Abdurahman Maarouf"
+date: "24 10 2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Libraries
+
+
+```{r library, include=FALSE}
+library(tidyverse)
+library(tidytext)
+library(textclean)
+library(stopwords)
+library(stringr)
+library(vader)
+library(corrr)
+library(irr)
+library(haven)
+library(emoji)
+library("quanteda.dictionaries")
+```
+
+
+
+# Load Data
+
+
+```{r data, include=FALSE}
+df <- read_csv("")
+```
+
+
+# Load LIWC dictionary
+
+
+```{r data, include=FALSE}
+
+load("")
+
+```
+
+
+# Data Cleaning
+## Create numeric dummies
+
+
+```{r}
+df_cleaned <- df %>%
+  mutate(hate_dummy = if_else(maj_label == "hateful", 1, 0),
+         attachment_dummy = if_else(is.na(attachments), 0, 1),
+         verified_dummy = if_else(verified, 1, 0))
+```
+
+
+## Calculate User Account Age (in days)
+
+
+```{r}
+df_cleaned <- df_cleaned %>%
+  mutate(root_account_age = as.numeric(difftime("2022-07-08", df_cleaned$created_at_account, units = "days")))
+
+```
+
+
+## Calculate User Activity by Account Age
+
+
+```{r}
+df_cleaned <- df_cleaned %>%
+  mutate(
+    tweet_count_byage = round(tweet_count / root_account_age, digits = 2)
+  )
+
+```
+
+
+# Text Mining
+## Tweet Preprocessing
+
+
+```{r}
+regex_url <- "http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+"
+regex_handle <- "@[a-zA-Z0-9_]+"
+regex_hashtags <- "#[a-zA-Z0-9_]+"
+regex_2nd_person <- "\\byou\\b|\\byour\\b|\\bu\\b|\\bur\\b|\\byours\\b|\\bu're\\b|\\byou're\\b|\\byour\\b|\\byourself\\b|\\burself\\b|\\bya\\b"
+
+
+df_cleaned <- df_cleaned %>%
+  mutate(
+    text_cleaned = str_to_lower(text),
+    text_cleaned = str_remove_all(text_cleaned, paste(regex_url, regex_handle, regex_hashtags, sep = "|")),
+    text_cleaned = replace_contraction(text_cleaned), # for example I'll -> I will
+    media_dummy = if_else(grepl(regex_url, df_cleaned$text), 1, 0),
+    mention_dummy = if_else(grepl(regex_handle, df_cleaned$text), 1, 0),
+    hashtag_dummy = if_else(grepl(regex_hashtags, df_cleaned$text), 1, 0),
+    tweet_length = str_length(text_cleaned),
+    tweet_uncleaned_length = str_length(str_remove_all(text, regex_url))
+  )
+  
+
+```
+
+
+## LIWC pronouns counter
+
+
+```{r}
+
+df_pronouns <- liwcalike(df_cleaned$text_cleaned, dictionary = liwc_dict) %>%
+  dplyr::select(c(WC, i, you, shehe, we, they, pronoun, ppron, ipron))
+
+df_cleaned_pronouns <- cbind(df_cleaned, df_pronouns) %>%
+  mutate(
+    i_count = round(WC*(i/100)),
+    you_count = round(WC*(you/100)),
+    shehe_count = round(WC*(shehe/100)),
+    we_count = round(WC*(we/100)),
+    they_count = round(WC*(they/100)),
+    pronoun_count = round(WC*(pronoun/100)),
+    ppron_count = round(WC*(ppron/100)),
+    ipron_count = round(WC*(ipron/100)),
+    second_person_dummy = if_else(you > 0, 1, 0),
+    directed_dummy = if_else(mention_dummy == 1 & second_person_dummy == 1, 1, 0)
+  )
+
+```
+
+
+## Compute sentiment
+
+```{r, include=FALSE}
+
+df_emotions <- df_cleaned_pronouns %>%
+  mutate(sentiment = vader_df(text_cleaned)$compound) %>%
+  mutate(sentiment = if_else(is.na(sentiment), 0, sentiment)) # only for one case NA is produced
+
+
+```
+
+
+# Save as csv
+
+
+```{r}
+write_csv(df_emotions, file = "/data/df_cascades_preprocessed.csv")
+```

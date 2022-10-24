@@ -1,0 +1,591 @@
+---
+title: "Regression"
+author: "Abdurahman Maarouf"
+date: '24 10 2022'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Libraries
+
+```{r library, include=FALSE}
+library(tidyverse)
+library(lme4)
+library(rcompanion)
+library(car)
+library(texreg)
+library(ggeffects)
+library(xtable)
+library(scales)
+library(MASS)
+library(glmmTMB)
+library(brglm2)
+library(reshape2)
+#library(broom.mixed)
+library(performance)
+source("utils.R")
+
+```
+
+# Import Data
+
+```{r data, include=FALSE}
+df <- read_csv("data/df_cascades_preprocessed.csv")
+```
+
+## Filter out potential NAs
+
+```{r message=F, warning=F}
+
+df_filtered <- df %>%
+  drop_na(root_account_age)
+
+sum(is.na(df_filtered$root_account_age))
+sum(is.na(df_filtered$tweet_count_byage))
+sum(is.na(df_filtered$listed_count_byage))
+
+```
+
+## Mean of dependent variables
+
+```{r}
+df_filtered %>%
+    group_by(maj_label) %>%
+    dplyr::summarize(
+      cascade_size = mean(cascade_size, na.rm=TRUE),
+      cascade_lifetime = mean(cascade_lifetime, na.rm=TRUE),
+      cascade_structural_virality = mean(cascade_structural_virality, na.rm=TRUE)
+    )
+```
+
+
+# Scaling
+
+```{r message=F, warning=F}
+
+vars_to_standardize <- c("cascade_size", "cascade_lifetime", "cascade_structural_virality", "followers_count", "following_count", "root_account_age", "tweet_count_byage", "tweet_length", "you", "you_count", "sentiment")
+
+df_filtered_scaled <- df_filtered %>%
+  mutate_at(vars(matches(paste0(vars_to_standardize, collapse = "|"))),
+            funs(log = log(1 + .))) %>%
+  mutate_at(vars(matches(paste0(vars_to_standardize, collapse = "|"))),
+            .funs = funs(scaled = scale(.) %>% as.vector))
+
+```
+
+# Variable definitions
+
+```{r, echo=F}
+variable_definitions <- tribble(
+  ~ModelVariable, ~DisplayVariable,  ~Description,
+  "maj_label", "Majority label", "The label given to the specific tweet (hate or normal)",
+  "hate_dummy", "Hateful", "If tweet is hateful (1 if true, otherwise 0)",
+  "cascade_size", "Cascade size", "Number of unique users involved in a cascade",
+  "cascade_lifetime", "Cascade lifetime", "Time difference between the last retweet and the cascade's original tweet (in hours)",
+  "cascade_structural_virality", "Structural virality", "The average distance between all pairs of nodes in a cascade",
+  "media_dummy", "Media item", "If tweet contains a URL-link and/or an attachment (1 if true, otherwise 0)",
+  "mention_dummy", "Mention", "If tweet mentions another user (1 if true, otherwise 0)",
+  "directed_dummy", "Directed", "If tweet mentions another user and contains 2nd pronouns (1 if true, otherwise 0)",
+  "hashtag_dummy", "Hashtag", "If tweet contains a hashtag (1 if true, otherwise 0)",
+  "tweet_length", "Tweet length", "The number of characters in the tweet",
+  "verified_dummy", "Verified", "If tweet-author is verified by twitter (1 if true, otherwise 0)",
+  "root_account_age", "Account age", "The age of the root-author’s account (in days)",
+  "root_account_age_in_1000", "Account age (in 1000s)", "The age of the root-author’s account (in 1000 days)",
+  "tweet_count_byage", "Tweet volume", "The number of tweets the root-author has made devided by the Account Age (in days)",
+  "followers_count", "Followers", "Number of people who follow the root-author on Twitter",
+  "following_count", "Followees", "Number of people who the root-author follows on Twitter",
+  "followers_count_in_1000", "Followers (in 1000s)", "Number of people who follow the root-author on Twitter (in 1000s)",
+  "following_count_in_1000", "Followees (in 1000s)", "Number of people who the root-author follows on Twitter (in 1000s)",
+)
+```
+
+```{r, message=F, warning=F, results="asis"}
+print(xtable(variable_definitions, digits = 3, caption = "Variable definitions."), table.placement = "H", include.rownames = F)
+```
+
+# Descriptive Statistics
+
+## Number of Root-Tweets/Cascades
+
+```{r, echo = FALSE}
+
+nrow(df_filtered_scaled)
+
+```
+
+## Count of hateful tweets
+
+```{r, echo = FALSE}
+
+df_filtered_scaled %>% group_by(maj_label) %>% summarize(Num_Rumors = length(unique(tweet_id)))
+
+```
+
+## Summary statistics
+
+```{r, message=F, warning=F, results="asis"}
+vars_descriptives <- c("cascade_size", "cascade_lifetime", "cascade_structural_virality")
+vars_ev <- c("hate_dummy", "followers_count_in_1000", "following_count_in_1000",  "tweet_count_byage", "root_account_age_in_1000", "verified_dummy", "media_dummy", "hashtag_dummy", "mention_dummy", "tweet_length")
+
+descriptives <- descriptiveStatistics(
+  x = df_filtered_scaled %>%
+  mutate(
+    hate = as.numeric(maj_label == "hateful"),
+    followers_count_in_1000 = followers_count/1000,
+    following_count_in_1000 = following_count/1000,
+    root_account_age_in_1000 = root_account_age/1000
+  ) %>%
+  dplyr::select(c(vars_descriptives, vars_ev)), digits = 3, subset = c("mean", "median", "min", "max", "sd")) %>%
+  rownames_to_column("Var") %>%
+  left_join(variable_definitions, by = c("Var" = "ModelVariable")) %>% dplyr::select(Variable = DisplayVariable, mean, median, sd)
+
+print(xtable(descriptives, digits = 3), table.placement = "H")
+#knitr::kable(descriptives, format = "markdown", digits = 3)
+```
+
+# Visualization Theme Setup
+
+```{r viz, include=FALSE}
+theme_set(
+  theme_bw() +
+    theme(legend.position = c(0.7, 0.9),
+          legend.title = element_blank(), legend.direction="horizontal",
+          legend.text = element_text(colour="black", size=20), 
+          legend.background=element_rect(fill="transparent", colour=NA),
+          legend.key = element_rect(fill = "transparent", colour = "transparent"),
+          legend.key.width = unit(1.25, "cm"), legend.key.height = unit(1.25, "cm")
+    ) + 
+    theme(axis.text.x=element_text(colour = "black", size=20, vjust=0.5), 
+          axis.text.y=element_text(colour = "black", size=20, vjust=0.5),
+          axis.title.x=element_text(size=20), 
+          axis.title.y=element_text(size=20, vjust=1.5)
+    ) +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+)
+```
+
+
+# Regression
+
+## Cascade Size
+
+```{r}
+
+control_vs <- c("media_dummy", "verified_dummy", "followers_count_scaled", "following_count_scaled", "tweet_count_byage_scaled",  "root_account_age_scaled", "hashtag_dummy", "mention_dummy", "tweet_length_scaled")
+interaction_vs <- c("hate_dummy * media_dummy", "hate_dummy * verified_dummy", "hate_dummy * followers_count_scaled", "hate_dummy * following_count_scaled", "hate_dummy * tweet_count_byage_scaled", "hate_dummy * root_account_age_scaled", "hate_dummy * hashtag_dummy", "hate_dummy * mention_dummy", "hate_dummy * tweet_length_scaled")
+exo_v <- "hate_dummy"
+dep_v <- "cascade_size"
+
+model_1b <- glmmTMB(make_formula(dep_v, c(control_vs, exo_v, interaction_vs), c()), data = df_filtered_scaled, family = nbinom2(link = "log"))
+```
+
+```{r message=F, warning=F}
+
+summary(model_1b)
+```
+
+### VIF
+
+```{r message=F, warning=F}
+
+model_1c <- update(model_1b, . ~ . - verified_dummy:hate_dummy - followers_count_scaled:hate_dummy - following_count_scaled:hate_dummy - tweet_count_byage_scaled:hate_dummy - root_account_age_scaled:hate_dummy - media_dummy:hate_dummy - hashtag_dummy:hate_dummy - mention_dummy:hate_dummy - tweet_length_scaled:hate_dummy)
+check_collinearity(model_1c)
+
+```
+
+
+### Plot marginal effects
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_cs_tweets <- marginal_effects_plot(model_1b, "tweet_count_byage_scaled [0:5 by=0.2]", dv_label="Cascade size", ev_label = "Tweet volume", plot_legend = TRUE, ylim_max = 7, xlim_min = 0, xlim_max = 5)
+plot_me_cs_tweets
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_cs_followers <- marginal_effects_plot(model_1b, "followers_count_scaled [0:5 by=0.2]", ev_label = "Followers", dv_label="Cascade size", plot_legend = TRUE, ylim_max = 50, xlim_min = 0, xlim_max = 5)
+plot_me_cs_followers
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_cs_following <- marginal_effects_plot(model_1b, "following_count_scaled  [0:5 by=0.2]", ev_label = "Followees", dv_label="Cascade size", plot_legend = TRUE, ylim_max = 100, xlim_min = 0, xlim_max = 5)
+plot_me_cs_following
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_cs_age <- marginal_effects_plot(model_1b, "root_account_age_scaled [-2:2 by=0.2]", ev_label = "Account age", dv_label="Cascade size", plot_legend = TRUE, ylim_max = 15, xlim_min = -2, xlim_max = 2, x_breaks=seq(-2, 2, 1), x_labels=c(expression("-2" ~ sigma), expression("-1" ~ sigma), expression(mu), expression("1" ~ sigma), expression("2" ~ sigma)))
+plot_me_cs_age
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_cs_tl <- marginal_effects_plot(model_1b, "tweet_length_scaled [-2:2 by=0.2]", ev_label = "Tweet length", dv_label="Cascade size", plot_legend = TRUE, ylim_max = 20, xlim_min = -2, xlim_max = 2, x_breaks=seq(-2, 2, 1), x_labels=c(expression("-2" ~ sigma), expression("-1" ~ sigma), expression(mu), expression("1" ~ sigma), expression("2" ~ sigma)))
+plot_me_cs_tl
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_cs_media <- marginal_effects_plot_dummy(model_1b, "media_dummy", dv_label="Cascade size", ev_label = "Media item", plot_legend = TRUE, ylim_max = 12)
+plot_me_cs_media
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_cs_verified <- marginal_effects_plot_dummy(model_1b, "verified_dummy", dv_label="Cascade size", ev_label = "Verified", plot_legend = TRUE, ylim_max = 130)
+plot_me_cs_verified
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_cs_hashtag <- marginal_effects_plot_dummy(model_1b, "hashtag_dummy", dv_label="Cascade size", ev_label = "Hashtag", plot_legend = TRUE, ylim_max = 15)
+plot_me_cs_hashtag
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_cs_mention <- marginal_effects_plot_dummy(model_1b, "mention_dummy", dv_label="Cascade size", ev_label = "Mention", plot_legend = TRUE, ylim_max = 10, ylim_min = 0)
+plot_me_cs_mention
+```
+
+
+## Cascade Lifetime
+
+```{r}
+
+control_vs <- c("media_dummy", "verified_dummy", "followers_count_scaled", "following_count_scaled", "tweet_count_byage_scaled",  "root_account_age_scaled", "hashtag_dummy", "mention_dummy", "tweet_length_scaled")
+interaction_vs <- c("hate_dummy * media_dummy", "hate_dummy * verified_dummy", "hate_dummy * followers_count_scaled", "hate_dummy * following_count_scaled", "hate_dummy * tweet_count_byage_scaled", "hate_dummy * root_account_age_scaled", "hate_dummy * hashtag_dummy", "hate_dummy * mention_dummy", "hate_dummy * tweet_length_scaled")
+exo_v <- "hate_dummy"
+dep_v <- "cascade_lifetime_log"
+
+model_2a <- lm(make_formula(dep_v, c(control_vs, exo_v, interaction_vs), c()), data = df_filtered_scaled)
+```
+
+```{r message=F, warning=F}
+
+summary(model_2a)
+
+```
+
+### VIF
+
+```{r message=F, warning=F}
+
+model_2c <- update(model_2a, . ~ . - media_dummy:hate_dummy - verified_dummy:hate_dummy - followers_count_scaled:hate_dummy - following_count_scaled:hate_dummy - tweet_count_byage_scaled:hate_dummy - root_account_age_scaled:hate_dummy - hashtag_dummy:hate_dummy - mention_dummy:hate_dummy - tweet_length_scaled:hate_dummy)
+vif(model_2c)
+
+```
+
+
+### Plot marginal effects
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_cl_tweets <- marginal_effects_plot(model_2a, "tweet_count_byage_scaled [0:5 by=0.2]", dv_label="Cascade lifetime (log)", ev_label = "Tweet volume", plot_legend = TRUE, ylim_max = 1, ylim_min = -0.5, xlim_min = 0, xlim_max = 5)
+plot_me_cl_tweets
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_cl_followers <- marginal_effects_plot(model_2a, "followers_count_scaled [0:5 by=0.2]", ev_label = "Followers", dv_label="Cascade lifetime (log)", plot_legend = TRUE, ylim_max = 1.5, ylim_min = 0, xlim_min = 0, xlim_max = 5)
+plot_me_cl_followers
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_cl_following <- marginal_effects_plot(model_2a, "following_count_scaled [0:5 by=0.2]", ev_label = "Followees", dv_label="Cascade lifetime (log)", plot_legend = TRUE, ylim_max = 2, xlim_min = 0, xlim_max = 5)
+plot_me_cl_following
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_cl_age <- marginal_effects_plot(model_2a, "root_account_age_scaled [-2:2 by=0.2]", ev_label = "Account age", dv_label="Cascade lifetime (log)", plot_legend = TRUE, ylim_max = 1, ylim_min = 0, xlim_min = -2, xlim_max = 2, x_breaks=seq(-2, 2, 1), x_labels=c(expression("-2" ~ sigma), expression("-1" ~ sigma), expression(mu), expression("1" ~ sigma), expression("2" ~ sigma)))
+plot_me_cl_age
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_cl_tl <- marginal_effects_plot(model_2a, "tweet_length_scaled [-2:2 by=0.2]", ev_label = "Tweet length", dv_label="Cascade lifetime (log)", plot_legend = TRUE, ylim_max = 1.5, ylim_min = -0.5, xlim_min = -2, xlim_max = 2, x_breaks=seq(-2, 2, 1), x_labels=c(expression("-2" ~ sigma), expression("-1" ~ sigma), expression(mu), expression("1" ~ sigma), expression("2" ~ sigma)))
+plot_me_cl_tl
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_cl_media <- marginal_effects_plot_dummy(model_2a, "media_dummy", dv_label="Cascade lifetime (log)", ev_label = "Media item", plot_legend = TRUE, ylim_max = 1.25)
+plot_me_cl_media
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_cl_verified <- marginal_effects_plot_dummy(model_2a, "verified_dummy", dv_label="Cascade lifetime (log)", ev_label = "Verified", plot_legend = TRUE, ylim_max = 3)
+plot_me_cl_verified
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_cl_hashtag <- marginal_effects_plot_dummy(model_2a, "hashtag_dummy", dv_label="Cascade lifetime (log)", ev_label = "Hashtag", plot_legend = TRUE, ylim_max = 1)
+plot_me_cl_hashtag
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_cl_mention <- marginal_effects_plot_dummy(model_2a, "mention_dummy", dv_label="Cascade lifetime (log)", ev_label = "Mention", plot_legend = TRUE, ylim_max = 1)
+plot_me_cl_mention
+```
+
+
+## Cascade Structural Virality
+
+```{r}
+
+df_filtered_scaled <- df_filtered_scaled %>%
+  mutate(
+    cascade_structural_virality_plus1 = 1 + cascade_structural_virality
+  )
+
+control_vs <- c("media_dummy", "verified_dummy", "followers_count_scaled", "following_count_scaled", "tweet_count_byage_scaled",  "root_account_age_scaled", "hashtag_dummy", "mention_dummy", "tweet_length_scaled")
+interaction_vs <- c("hate_dummy * media_dummy", "hate_dummy * verified_dummy", "hate_dummy * followers_count_scaled", "hate_dummy * following_count_scaled", "hate_dummy * tweet_count_byage_scaled", "hate_dummy * root_account_age_scaled", "hate_dummy * hashtag_dummy", "hate_dummy * mention_dummy", "hate_dummy * tweet_length_scaled")
+exo_v <- "hate_dummy"
+dep_v <- "cascade_structural_virality_plus1"
+
+model_3a <- glm(make_formula(dep_v, c(control_vs, exo_v, interaction_vs), c()), data = df_filtered_scaled, family = Gamma(link = "log"))
+```
+
+```{r message=F, warning=F}
+
+summary(model_3a)
+
+```
+
+
+### Plot marginal effects
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_sv_tweets <- marginal_effects_plot(model_3a, "tweet_count_byage_scaled [0:5 by=0.2]", dv_label="Structural virality", ev_label = "Tweet volume", plot_legend = TRUE, ylim_max = 2, ylim_min = 1, xlim_min = 0, xlim_max = 5)
+plot_me_sv_tweets
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_sv_followers <- marginal_effects_plot(model_3a, "followers_count_scaled [0:5 by=0.2]", dv_label="Structural virality", ev_label = "Followers", plot_legend = TRUE, ylim_max = 2, ylim_min = 1, xlim_min = 0, xlim_max = 5)
+plot_me_sv_followers
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_sv_following <- marginal_effects_plot(model_3a, "following_count_scaled [0:5 by=0.2]", dv_label="Structural virality", ev_label = "Followees", plot_legend = TRUE, ylim_max = 3, xlim_min = 0, xlim_max = 5)
+plot_me_sv_following
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_sv_age <- marginal_effects_plot(model_3a, "root_account_age_scaled [-2:2 by=0.2]", dv_label="Structural virality", ev_label = "Account age", plot_legend = TRUE, ylim_max = 1.6, xlim_min = -2, xlim_max = 2, x_breaks=seq(-2, 2, 1), x_labels=c(expression("-2" ~ sigma), expression("-1" ~ sigma), expression(mu), expression("1" ~ sigma), expression("2" ~ sigma)))
+plot_me_sv_age
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_sv_tl <- marginal_effects_plot(model_3a, "tweet_length_scaled [-2:2 by=0.2]", dv_label="Structural virality", ev_label = "Tweet length", plot_legend = TRUE, ylim_max = 2, ylim_min = 1, xlim_min = -2, xlim_max = 2, x_breaks=seq(-2, 2, 1), x_labels=c(expression("-2" ~ sigma), expression("-1" ~ sigma), expression(mu), expression("1" ~ sigma), expression("2" ~ sigma)))
+plot_me_sv_tl
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_sv_media <- marginal_effects_plot_dummy(model_3a, "media_dummy", dv_label="Structural virality", ev_label = "Media item", plot_legend = TRUE, ylim_max = 1.8)
+plot_me_sv_media
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_sv_verified <- marginal_effects_plot_dummy(model_3a, "verified_dummy", dv_label="Structural virality", ev_label = "Verified", plot_legend = TRUE, ylim_max = 3.5)
+plot_me_sv_verified
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_sv_hashtag <- marginal_effects_plot_dummy(model_3a, "hashtag_dummy", dv_label="Structural virality", ev_label = "Hashtag", plot_legend = TRUE, ylim_max = 1.7)
+plot_me_sv_hashtag
+```
+
+```{r, eval=F, message=F, warning=F}
+
+plot_me_sv_mention <- marginal_effects_plot_dummy(model_3a, "mention_dummy", dv_label="Structural virality", ev_label = "Mention", plot_legend = TRUE, ylim_max = 1.7)
+plot_me_sv_mention
+```
+
+
+## Coefficient Plot
+
+
+```{r, eval=F, message=F, warning=F}
+
+out <- purrr::map_df(list(model_1b, model_2a, model_3a), conf.level = 0.95, conf.int = T, broom.mixed::tidy, .id = "model") %>%
+  dplyr::select(-c(effect, component)) %>%
+  separate(term, c('term_1', 'term_2'), sep = ":") %>%
+  mutate(term_1 = gsub("_log_scaled", "", term_1)) %>%
+  mutate(term_1 = gsub("_scaled", "", term_1)) %>%
+  left_join(variable_definitions, by = c("term_1" = "ModelVariable")) %>%
+  dplyr::select(-c(Description)) %>%
+  left_join(variable_definitions, by = c("term_2" = "ModelVariable")) %>%
+  dplyr::select(-c(Description)) %>%
+  mutate(DisplayVariable = if_else(is.na(DisplayVariable.y), DisplayVariable.x, paste0(DisplayVariable.x, " x ", DisplayVariable.y))) %>%
+  filter(!term_1 %in% c("(Intercept)")) %>%
+  dplyr::select(-c(DisplayVariable.x, DisplayVariable.y)) %>%
+  mutate(model = paste0("Model ", model)) %>% 
+  mutate(DisplayVariable = factor(DisplayVariable, levels = unique(DisplayVariable))) %>% 
+  mutate(model = factor(model, level = c("Model 1", "Model 2", "Model 3"), #"Model 3", 
+                        labels = c("DV: Cascade size", "DV: Cascade lifetime", "DV: Structural virality"))) %>% #"DV: Structural virality",
+  mutate(model = factor(model, levels = rev(levels(model))))
+```
+
+```{r, eval=F, message=F, warning=F}
+
+ggplot(out, mapping = aes(x = factor(DisplayVariable, levels = c("Hateful", "Followers", "Followees", "Tweet volume", "Account age", "Verified", "Media item", "Hashtag", "Mention", "Tweet length", "Followers x Hateful", "Followees x Hateful", "Tweet volume x Hateful", "Account age x Hateful", "Verified x Hateful", "Media item x Hateful", "Hashtag x Hateful", "Mention x Hateful", "Tweet length x Hateful")), color = (model), fill = (model), y = estimate, ymin = conf.low, ymax = conf.high)) + 
+  geom_pointrange(position = position_dodge(width = 0.75), size = 1.5, shape = 21) + 
+  geom_hline(yintercept = 0, colour = "grey40", linetype = 2) +
+  coord_flip() + labs(x = "", y = "") +
+  scale_y_continuous(
+    limits = c(-2, 2.2)
+  ) + 
+  scale_x_discrete(limits = rev) + 
+  scale_fill_manual(values = c("#F57C00", "#1976D2", "#43A047")) +
+  scale_color_manual(values = c("#F57C00", "#1976D2", "#43A047")) +
+  #scale_color_manual(values = wes_palette(n = 3, name = "Chevalier1")) +
+  #scale_color_brewer(palette="Accent") + #Paired
+  theme(legend.position = "top", #c(0.80, 0.9)
+        legend.text = element_text(size = 18),
+        legend.direction = "vertical", 
+        legend.background = element_rect(fill = "transparent", colour = NA), 
+        plot.margin = grid::unit(c(1, 1, 1, 1), "mm")) +
+  geom_vline(xintercept = seq(1.5, length(unique(out$DisplayVariable))-0.5, 1), lwd = 0.5, colour="grey") +
+  guides(fill = guide_legend(reverse = TRUE), color = guide_legend(reverse = TRUE))
+```
+
+
+# Pronouns Analysis
+
+## Correlation
+
+
+```{r message=F, warning=F}
+cor_exp <- df_filtered_scaled %>%
+  filter(hate_dummy==1) %>%
+  dplyr::select(Mention = mention_dummy, I = i_count, You = you_count, SheHe = shehe_count, We = we_count, They = they_count, Pronouns = pronoun_count, Personal = ppron_count, Notpersonal = ipron_count) %>%
+  cor() %>%
+  round(., 2)
+
+get_corhm_plot(cor_exp)
+```
+
+
+## Cascade Size
+
+```{r}
+
+control_vs <- c("media_dummy", "verified_dummy", "followers_count_scaled", "following_count_scaled", "tweet_count_byage_scaled",  "root_account_age_scaled", "hashtag_dummy", "directed_dummy", "tweet_length_scaled")
+interaction_vs <- c("hate_dummy * media_dummy", "hate_dummy * verified_dummy", "hate_dummy * followers_count_scaled", "hate_dummy * following_count_scaled", "hate_dummy * tweet_count_byage_scaled", "hate_dummy * root_account_age_scaled", "hate_dummy * hashtag_dummy", "hate_dummy * directed_dummy", "hate_dummy * tweet_length_scaled")
+#interaction_vs <- c()
+exo_v <- "hate_dummy"
+dep_v <- "cascade_size"
+
+model_1g <- glmmTMB(make_formula(dep_v, c(control_vs, exo_v, interaction_vs), c()), data = df_filtered_scaled, family = nbinom2(link = "log"))
+```
+
+```{r message=F, warning=F}
+
+summary(model_1g)
+
+```
+
+
+## Cascade Lifetime
+
+```{r}
+
+control_vs <- c("media_dummy", "verified_dummy", "followers_count_scaled", "following_count_scaled", "tweet_count_byage_scaled",  "root_account_age_scaled", "hashtag_dummy", "directed_dummy", "tweet_length_scaled")
+interaction_vs <- c("hate_dummy * media_dummy", "hate_dummy * verified_dummy", "hate_dummy * followers_count_scaled", "hate_dummy * following_count_scaled", "hate_dummy * tweet_count_byage_scaled", "hate_dummy * root_account_age_scaled", "hate_dummy * hashtag_dummy", "hate_dummy * directed_dummy", "hate_dummy * tweet_length_scaled")
+exo_v <- "hate_dummy"
+dep_v <- "cascade_lifetime_log"
+
+model_2g <- lm(make_formula(dep_v, c(control_vs, exo_v, interaction_vs), c()), data = df_filtered_scaled)
+```
+
+```{r message=F, warning=F}
+
+summary(model_2g)
+
+```
+
+
+## Cascade Structural Virality
+
+```{r}
+
+control_vs <- c("media_dummy", "verified_dummy", "followers_count_scaled", "following_count_scaled", "tweet_count_byage_scaled",  "root_account_age_scaled", "hashtag_dummy", "directed_dummy", "tweet_length_scaled")
+interaction_vs <- c("hate_dummy * media_dummy", "hate_dummy * verified_dummy", "hate_dummy * followers_count_scaled", "hate_dummy * following_count_scaled", "hate_dummy * tweet_count_byage_scaled", "hate_dummy * root_account_age_scaled", "hate_dummy * hashtag_dummy", "hate_dummy * directed_dummy", "hate_dummy * tweet_length_scaled")
+exo_v <- "hate_dummy"
+dep_v <- "cascade_structural_virality_plus1"
+
+model_3g <- glm(make_formula(dep_v, c(control_vs, exo_v, interaction_vs), c()), data = df_filtered_scaled, family = Gamma(link = "log"))
+```
+
+```{r message=F, warning=F}
+
+summary(model_3g)
+
+```
+
+
+## Coefficient Plot
+
+```{r, eval=F, message=F, warning=F}
+
+out_pronouns <- purrr::map_df(list(model_1g, model_2g, model_3g), conf.level = 0.95, conf.int = T, broom.mixed::tidy, .id = "model") %>%
+  dplyr::select(-c(effect, component)) %>%
+  separate(term, c('term_1', 'term_2'), sep = ":") %>%
+  mutate(term_1 = gsub("_log_scaled", "", term_1)) %>%
+  mutate(term_1 = gsub("_scaled", "", term_1)) %>%
+  left_join(variable_definitions, by = c("term_1" = "ModelVariable")) %>%
+  dplyr::select(-c(Description)) %>%
+  left_join(variable_definitions, by = c("term_2" = "ModelVariable")) %>%
+  dplyr::select(-c(Description)) %>%
+  mutate(DisplayVariable = if_else(is.na(DisplayVariable.y), DisplayVariable.x, paste0(DisplayVariable.x, " x ", DisplayVariable.y))) %>%
+  filter(!term_1 %in% c("(Intercept)")) %>%
+  dplyr::select(-c(DisplayVariable.x, DisplayVariable.y)) %>%
+  mutate(model = paste0("Model ", model)) %>% 
+  mutate(DisplayVariable = factor(DisplayVariable, levels = unique(DisplayVariable))) %>% 
+  mutate(model = factor(model, level = c("Model 1", "Model 2", "Model 3"), #"Model 3", 
+                        labels = c("DV: Cascade size", "DV: Cascade lifetime", "DV: Structural virality"))) %>% #"DV: Structural virality",
+  mutate(model = factor(model, levels = rev(levels(model))))
+```
+
+```{r, eval=F, message=F, warning=F}
+# df_ggplot <- out %>% filter(!term_1 %in% c("sentiment", "verified_dummy", "attachment_dummy"))
+
+ggplot(out_pronouns, mapping = aes(x = factor(DisplayVariable, levels = c("Hateful", "Followers", "Followees", "Tweet volume", "Account age", "Verified", "Media item", "Hashtag", "Directed", "Tweet length", "Followers x Hateful", "Followees x Hateful", "Tweet volume x Hateful", "Account age x Hateful", "Verified x Hateful", "Media item x Hateful", "Hashtag x Hateful", "Directed x Hateful", "Tweet length x Hateful")), color = (model), fill = (model), y = estimate, ymin = conf.low, ymax = conf.high)) + 
+  geom_pointrange(position = position_dodge(width = 0.75), size = 1.5, shape = 21) + 
+  geom_hline(yintercept = 0, colour = "grey40", linetype = 2) +
+  coord_flip() + labs(x = "", y = "") +
+  scale_y_continuous(
+    limits = c(-2.1, 2.7)
+  ) + 
+  scale_x_discrete(limits = rev) + 
+  scale_fill_manual(values = c("#F57C00", "#1976D2", "#43A047")) +
+  scale_color_manual(values = c("#F57C00", "#1976D2", "#43A047")) +
+  #scale_color_manual(values = wes_palette(n = 3, name = "Chevalier1")) +
+  #scale_color_brewer(palette="Accent") + #Paired
+  theme(legend.position = "top", #c(0.80, 0.9)
+        legend.text = element_text(size = 18),
+        legend.direction = "vertical", 
+        legend.background = element_rect(fill = "transparent", colour = NA), 
+        plot.margin = grid::unit(c(1, 1, 1, 1), "mm")) +
+  geom_vline(xintercept = seq(1.5, length(unique(out_pronouns$DisplayVariable))-0.5, 1), lwd = 0.5, colour="grey") +
+  guides(fill = guide_legend(reverse = TRUE), color = guide_legend(reverse = TRUE))
+```
+

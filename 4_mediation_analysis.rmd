@@ -1,0 +1,239 @@
+---
+title: "Mediation Analysis"
+author: "Abdurahman Maarouf"
+date: '24 10 2022'
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Libraries
+
+
+```{r library, include=FALSE}
+library(tidyverse)
+library(lme4)
+library(rcompanion)
+library(car)
+library(texreg)
+library(ggeffects)
+library(xtable)
+library(scales)
+library(MASS)
+library(glmmTMB)
+library(brglm2)
+library(reshape2)
+library(mediation)
+#library(broom.mixed)
+library(performance)
+source("utils.R")
+
+```
+
+
+# Import Data
+
+
+```{r data, include=FALSE}
+df <- read_csv("data/df_cascades_preprocessed.csv")
+```
+
+
+## Filter out potential NAs
+
+```{r message=F, warning=F}
+
+df_filtered <- df %>%
+  drop_na(root_account_age)
+
+sum(is.na(df_filtered$root_account_age))
+sum(is.na(df_filtered$tweet_count_byage))
+sum(is.na(df_filtered$listed_count_byage))
+
+```
+
+
+# Scaling
+
+```{r message=F, warning=F}
+
+vars_to_standardize <- c("cascade_size", "cascade_lifetime", "cascade_structural_virality", "sentiment", "followers_count", "following_count", "tweet_count", "root_account_age", "tweet_count_byage", "tweet_length", "tweet_uncleaned_length")
+
+df_filtered_scaled <- df_filtered %>%
+  mutate_at(vars(matches(paste0(vars_to_standardize, collapse = "|"))),
+            funs(log = log(1 + .))) %>%
+  mutate_at(vars(matches(paste0(vars_to_standardize, collapse = "|"))),
+            .funs = funs(scaled = scale(.) %>% as.vector))
+
+```
+
+# Variable definitions
+
+```{r, echo=F}
+variable_definitions <- tribble(
+  ~ModelVariable, ~DisplayVariable,  ~Description,
+  "maj_label", "Majority label", "The label given to the specific tweet (hate or normal)",
+  "hate_dummy", "Hateful", "If tweet is hateful (1 if true, otherwise 0)",
+  "cascade_size", "Cascade size", "Number of unique users involved in a cascade",
+  "cascade_lifetime", "Cascade lifetime", "Time difference between the last retweet and the cascade's original tweet (in hours)",
+  "cascade_structural_virality", "Structural virality", "The average distance between all pairs of nodes in a cascade",
+  "media_dummy", "Media item", "If tweet contains a URL-link and/or an attachment (1 if true, otherwise 0)",
+  "mention_dummy", "Mention", "If tweet mentions another user (1 if true, otherwise 0)",
+  "directed_dummy", "Directed", "If tweet mentions another user and contains 2nd pronouns (1 if true, otherwise 0)",
+  "hashtag_dummy", "Hashtag", "If tweet contains a hashtag (1 if true, otherwise 0)",
+  "tweet_length", "Tweet length", "The number of characters in the tweet",
+  "verified_dummy", "Verified", "If tweet-author is verified by twitter (1 if true, otherwise 0)",
+  "root_account_age", "Account age", "The age of the root-author’s account (in days)",
+  "root_account_age_in_1000", "Account age (in 1000s)", "The age of the root-author’s account (in 1000 days)",
+  "tweet_count_byage", "Tweet volume", "The number of tweets the root-author has made devided by the Account Age (in days)",
+  "followers_count", "Followers", "Number of people who follow the root-author on Twitter",
+  "following_count", "Followees", "Number of people who the root-author follows on Twitter",
+  "followers_count_in_1000", "Followers (in 1000s)", "Number of people who follow the root-author on Twitter (in 1000s)",
+  "following_count_in_1000", "Followees (in 1000s)", "Number of people who the root-author follows on Twitter (in 1000s)",
+)
+```
+
+
+
+# Mediation Analysis
+## 1. Do the EVs significantly explain cascade lifetime and structural virality?
+### Cascade lifetime
+
+
+```{r}
+
+control_vs_2d <- c("media_dummy", "verified_dummy", "followers_count_scaled", "following_count_scaled", "tweet_count_byage_scaled",  "root_account_age_scaled", "hashtag_dummy", "mention_dummy", "tweet_length_scaled")
+interaction_vs_2d <- c()
+exo_v_2d <- "hate_dummy"
+dep_v_2d <- "cascade_lifetime_log"
+
+model_2d <- lm(make_formula(dep_v_2d, c(control_vs_2d, exo_v_2d, interaction_vs_2d), c()), data = df_filtered_scaled)
+```
+
+
+```{r message=F, warning=F}
+
+summary(model_2d)
+
+```
+
+
+### Cascade Structural Virality
+
+
+```{r}
+
+control_vs_3d <- c("media_dummy", "verified_dummy", "followers_count_scaled", "following_count_scaled", "tweet_count_byage_scaled",  "root_account_age_scaled", "hashtag_dummy", "mention_dummy", "tweet_length_scaled")
+interaction_vs_3d <- c()
+exo_v_3d <- "hate_dummy"
+dep_v_3d <- "cascade_structural_virality_log"
+
+model_3d <- lm(make_formula(dep_v_3d, c(control_vs_3d, exo_v_3d, interaction_vs_3d), c()), data = df_filtered_scaled)
+```
+
+
+
+```{r message=F, warning=F}
+
+summary(model_3d)
+
+```
+
+
+## 2. Do the EVs significantly explain the mediator cascade size?
+
+
+```{r}
+
+control_vs_1d <- c("media_dummy", "verified_dummy", "followers_count_scaled", "following_count_scaled", "tweet_count_byage_scaled",  "root_account_age_scaled", "hashtag_dummy", "mention_dummy", "tweet_length_scaled")
+interaction_vs_1d <- c()
+exo_v_1d <- "hate_dummy"
+dep_v_1d <- "cascade_size_log"
+
+model_1d <- glm(make_formula(dep_v_1d, c(control_vs_1d, exo_v_1d, interaction_vs_1d), c()), data = df_filtered_scaled, family = Gamma(link = "log"))
+```
+
+
+```{r message=F, warning=F}
+
+summary(model_1d)
+
+```
+
+
+## 3. How do the effects of EVs on cascade lifetime and structural virality change when controlling for mediator cascade size
+### Cascade lifetime
+
+
+```{r}
+
+control_vs_2e <- c("media_dummy", "verified_dummy", "followers_count_scaled", "following_count_scaled", "tweet_count_byage_scaled",  "root_account_age_scaled", "hashtag_dummy", "mention_dummy", "tweet_length_scaled", "cascade_size_log")
+interaction_vs_2e <- c()
+exo_v_2e <- "hate_dummy"
+dep_v_2e <- "cascade_lifetime_log"
+
+model_2e <- lm(make_formula(dep_v_2e, c(control_vs_2e, exo_v_2e, interaction_vs_2e), c()), data = df_filtered_scaled)
+```
+
+
+```{r message=F, warning=F}
+
+summary(model_2e)
+
+```
+
+
+### Cascade Structural Virality
+
+
+```{r}
+
+df_filtered_scaled <- df_filtered_scaled %>%
+  mutate(
+    cascade_structural_virality_log2 = log(1.1 + cascade_structural_virality),
+    cascade_structural_virality_plus1 = 1 + cascade_structural_virality
+  )
+
+control_vs_3e <- c("media_dummy", "verified_dummy", "followers_count_scaled", "following_count_scaled", "tweet_count_byage_scaled",  "root_account_age_scaled", "hashtag_dummy", "mention_dummy", "tweet_length_scaled", "cascade_size_log")
+interaction_vs_3e <- c()
+exo_v_3e <- "hate_dummy"
+dep_v_3e <- "cascade_structural_virality_log"
+
+model_3e <- lm(make_formula(dep_v_3e, c(control_vs_3e, exo_v_3e, interaction_vs_3e), c()), data = df_filtered_scaled)
+```
+
+
+
+```{r message=F, warning=F}
+
+summary(model_3e)
+
+```
+
+
+## 4. Statistically test mediation
+### Cascade lifetime
+
+
+```{r message=F, warning=F}
+
+set.seed(1234)
+results <- mediate(model_1d, model_2e, treat = "hate_dummy", mediator = "cascade_size_log", covariates = control_vs, boot = TRUE, sims = 500)
+summary(results)
+
+```
+
+### Structural Virality
+
+
+```{r message=F, warning=F}
+
+set.seed(1234)
+results <- mediate(model_1d, model_3e, treat = "hate_dummy", mediator = "cascade_size_log", covariates = control_vs, boot = TRUE, sims = 500)
+summary(results)
+
+```

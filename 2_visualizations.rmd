@@ -1,0 +1,245 @@
+---
+title: "Data Visualization"
+author: "Abdurahman Maarouf"
+date: '24 10 2022'
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Libraries
+
+
+```{r library, include=FALSE}
+library(tidyverse)
+library(lme4)
+library(car)
+library(texreg)
+library(ggeffects)
+library(xtable)
+library(scales)
+library(reshape2)
+source("utils.R")
+```
+
+
+# Import Data
+
+
+```{r data, include=FALSE}
+df <- read_csv("data/df_cascades_preprocessed.csv")
+```
+
+
+# Visualization Theme Setup
+
+
+```{r viz, include=FALSE}
+theme_set(
+  theme_bw() +
+    theme(legend.position = c(0.7, 0.9),
+          legend.title = element_blank(), legend.direction="horizontal",
+          legend.text = element_text(colour="black", size=20), 
+          legend.background=element_rect(fill="transparent", colour=NA),
+          legend.key = element_rect(fill = "transparent", colour = "transparent"),
+          legend.key.width = unit(1.25, "cm"), legend.key.height = unit(1.25, "cm")
+    ) + 
+    theme(axis.text.x=element_text(colour = "black", size=20, vjust=0.5), 
+          axis.text.y=element_text(colour = "black", size=20, vjust=0.5),
+          axis.title.x=element_text(size=20), 
+          axis.title.y=element_text(size=20, vjust=1.5)
+    ) +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+)
+```
+
+
+# Plot Cascade Metrics
+
+## Cascade Size CCDF
+
+
+```{r}
+df_plot_csize3 <- df %>%
+  dplyr::select(c(cascade_id, maj_label, cascade_size))
+
+# KS-Test
+hate_csize3 <- dplyr::pull(subset(df_plot_csize3, maj_label == "hateful", select = cascade_size), cascade_size)
+nonhate_csize3 <- dplyr::pull(subset(df_plot_csize3, maj_label == "normal", select = cascade_size), cascade_size)
+ks_csize3 <- ks.test(hate_csize3, nonhate_csize3)
+if (ks_csize3$p.value < 0.001) {
+statement <- "<0.001"
+} else if (ks_csize3$p.value < 0.01) {
+statement <- "<0.01"
+} else if (ks_csize3$p.value < 0.05) {
+statement <- "<0.05"
+} else {
+statement <- sprintf("~%s", round(ks_csize3$p.value, digits = 2))
+}
+ks_csize3_string <- sprintf("KS-test: D=%s, p%s", round(ks_csize3$statistic, digits = 2), statement)
+
+# Calculate ccdf
+df_plot_csize3 <- df_plot_csize3 %>%
+  group_by(maj_label) %>%
+  group_modify(~ ccdf(.x$cascade_size)) %>%
+  arrange(x) %>%
+  mutate(y = lag(y, default = 1)) %>%
+  ungroup()
+df_plot_csize3 <- df_plot_csize3[!(is.na(df_plot_csize3$maj_label) | df_plot_csize3$maj_label==""), ]
+
+# Plot ccdf
+plot_ccdf <- ggplot(df_plot_csize3, aes(x = x, y = y, group=maj_label)) + geom_line(aes(group = maj_label, color=maj_label, linetype = maj_label), size = 1.5) + #, linetype="dashed"
+  scale_colour_manual(values=c("#CE1126", "#003893", "#56B4E9"), labels= c("Hateful", "Normal")) +
+  scale_linetype_discrete(labels= c("Hateful", "Normal")) + 
+  scale_x_continuous(
+    trans = "log10" ,
+    breaks = c(1:10, seq(20,100,10), seq(200, 1000, 100), seq(1100, 10000, 1000)),
+    labels = c(1, rep("", 8), 10, rep("", 8), 100, rep("", 8), 1000, rep("", 8), "10K"),
+    limits = c(1, 12000),
+    expand = c(0, 0)
+    #     breaks = c(1:10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+  ) +
+  scale_y_continuous(
+    labels = c("0.1", "1", "10", "100"),
+    trans = "log10",
+    breaks = c(0.001, 0.01, 0.1, 1),
+    #labels = c(0.05, 0.1, 0.5, 1),
+    limits = c(0.001,1),
+    expand = c(0, 0)
+  )  +
+  labs(y = "CCDF (%)", x = "Cascade size") + 
+  annotate(geom = 'text', label = ks_csize3_string, x=0,y=0,hjust=-0,vjust=-0.5, size = 4.5) +
+  theme(plot.margin=grid::unit(c(5,7,2,5), "mm"),
+        legend.text = element_text(size = 15),
+        legend.box = "vertical",
+        legend.position = c(0.68, 0.93))
+plot_ccdf
+```
+
+
+
+## Cascade Lifetime CCDF
+
+
+```{r}
+df_plot_clt3 <- df %>%
+  dplyr::select(c(cascade_id, maj_label, cascade_lifetime))
+
+# KS-Test
+hate_clt3 <- dplyr::pull(subset(df_plot_clt3, maj_label == "hateful", select = cascade_lifetime), cascade_lifetime)
+nonhate_clt3 <- dplyr::pull(subset(df_plot_clt3, maj_label == "normal", select = cascade_lifetime), cascade_lifetime)
+ks_clt3 <- ks.test(hate_clt3, nonhate_clt3)
+if (ks_clt3$p.value < 0.001) {
+statement <- "<0.001"
+} else if (ks_clt3$p.value < 0.01) {
+statement <- "<0.01"
+} else if (ks_clt3$p.value < 0.05) {
+statement <- "<0.05"
+} else {
+statement <- sprintf("~%s", round(ks_clt3$p.value, digits = 2))
+}
+ks_clt3_string <- sprintf("KS-test: D=%s, p%s", round(ks_clt3$statistic, digits = 2), statement)
+
+# Calculate ccdf
+df_plot_clt3 <- df_plot_clt3 %>%
+  group_by(maj_label) %>%
+  group_modify(~ ccdf(.x$cascade_lifetime)) %>%
+  arrange(x) %>%
+  mutate(y = lag(y, default = 1)) %>%
+  ungroup()
+df_plot_clt3 <- df_plot_clt3[!(is.na(df_plot_clt3$maj_label) | df_plot_clt3$maj_label==""), ]
+
+plot_ccdf <- ggplot(df_plot_clt3, aes(x = x, y = y, group=maj_label)) + geom_line(aes(group = maj_label, color=maj_label, linetype = maj_label), size = 1.5) + #, linetype="dashed"
+  scale_colour_manual(values=c("#CE1126", "#003893", "#56B4E9"), labels= c("Hateful", "Normal")) +
+  scale_linetype_discrete(labels= c("Hateful", "Normal")) + 
+  scale_x_continuous(
+    trans = "log10" ,
+    breaks = c(1:10, seq(20,100,10), seq(200, 1000, 100), seq(1100, 10000, 1000), seq(20000, 100000, 10000)),
+    labels = c(1, rep("", 8), 10, rep("", 8), 100, rep("", 8), 1000, rep("", 8), "10K", rep("", 8), "100K"),
+    limits = c(1, 100000),
+    expand = expand_scale(add = c(1, 0.1))
+    #     breaks = c(1:10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+  ) +
+  scale_y_continuous(
+    labels = c("0.1", "1", "10", "100"),
+    trans = "log10",
+    breaks = c(0.001, 0.01, 0.1, 1),
+    #labels = c(0.05, 0.1, 0.5, 1),
+    limits = c(0.001,1),
+    expand = c(0, 0)
+  )  +
+  labs(y = "CCDF (%)", x = "Cascade lifetime (hours)") +
+  annotate(geom = 'text', label = ks_clt3_string, x=0,y=0,hjust=-0,vjust=-0.5, size = 4.5) +
+  theme(plot.margin=grid::unit(c(5,7,2,5), "mm"),
+        legend.text = element_text(size = 15),
+        legend.box = "vertical",
+        legend.position = c(0.68, 0.93)) # "none"
+
+plot_ccdf
+```
+
+
+
+## Cascade Strucural Virality CCDF
+
+
+```{r}
+df_plot_sv <- df %>%
+  dplyr::select(c(cascade_id, maj_label, cascade_structural_virality))
+
+# KS-Test
+hate_clt3 <- dplyr::pull(subset(df_plot_sv, maj_label == "hateful", select = cascade_structural_virality), cascade_structural_virality)
+nonhate_clt3 <- dplyr::pull(subset(df_plot_sv, maj_label == "normal", select = cascade_structural_virality), cascade_structural_virality)
+ks_clt3 <- ks.test(hate_clt3, nonhate_clt3)
+if (ks_clt3$p.value < 0.001) {
+statement <- "<0.001"
+} else if (ks_clt3$p.value < 0.01) {
+statement <- "<0.01"
+} else if (ks_clt3$p.value < 0.05) {
+statement <- "<0.05"
+} else {
+statement <- sprintf("~%s", round(ks_clt3$p.value, digits = 2))
+}
+ks_clt3_string <- sprintf("KS-test: D=%s, p%s", round(ks_clt3$statistic, digits = 2), statement)
+
+# Calculate ccdf
+df_plot_sv <- df_plot_sv %>%
+  group_by(maj_label) %>%
+  group_modify(~ ccdf(.x$cascade_structural_virality)) %>%
+  arrange(x) %>%
+  mutate(y = lag(y, default = 1)) %>%
+  ungroup()
+df_plot_sv <- df_plot_sv[!(is.na(df_plot_sv$maj_label) | df_plot_sv$maj_label==""), ]
+
+plot_ccdf <- ggplot(df_plot_sv, aes(x = x, y = y, group=maj_label)) + geom_line(aes(group = maj_label, color=maj_label, linetype = maj_label), size = 1.5) + #, linetype="dashed"
+  scale_colour_manual(values=c("#CE1126", "#003893", "#56B4E9"), labels= c("Hateful", "Normal")) +
+  scale_linetype_discrete(labels= c("Hateful", "Normal")) + 
+  scale_x_continuous(
+    trans = "log10" ,
+    breaks = c(1:10),
+    labels = c(1, rep("", 3), 5, rep("", 4), 10),
+    limits = c(1, 10),
+    expand = expand_scale(add = c(0.1, 0.1))
+    #     breaks = c(1:10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+  ) +
+  scale_y_continuous(
+    labels = c("0.1", "1", "10", "100"),
+    trans = "log10",
+    breaks = c(0.001, 0.01, 0.1, 1),
+    #labels = c(0.05, 0.1, 0.5, 1),
+    limits = c(0.001,1),
+    expand = c(0, 0)
+  )  +
+  labs(y = "CCDF (%)", x = "Structural virality") +
+  annotate(geom = 'text', label = ks_clt3_string, x=0,y=0,hjust=-0,vjust=-0.5, size = 4.5) +
+  theme(plot.margin=grid::unit(c(5,7,2,5), "mm"),
+        legend.text = element_text(size = 15),
+        legend.box = "vertical",
+        legend.position = c(0.68, 0.93))
+
+plot_ccdf
+```
